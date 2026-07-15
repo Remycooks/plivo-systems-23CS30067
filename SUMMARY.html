@@ -177,7 +177,7 @@
     lost, via the parity. The only added latency this introduces is intrinsic to
     the FEC group size itself: a lost frame can't be reconstructed until the block's
     <em>last</em> member and its parity have both gone out, i.e. up to
-    <code>(G−1)×20ms</code> after the loss — 40&nbsp;ms for G=3.
+    <code>(G−1)×20ms</code> after the loss — 20&nbsp;ms for the shipped G=2.
   </p>
 
   <h2>4 · Why FEC and not retransmission</h2>
@@ -210,8 +210,8 @@
   </p>
   <div class="grid2">
     <div class="card">
-      <h3>Chosen: G = 3</h3>
-      <div class="stat">1.38×</div>
+      <h3>Chosen: G = 2</h3>
+      <div class="stat">1.55×</div>
       <div class="capline">measured bandwidth overhead — cap is 2.00×</div>
     </div>
     <div class="card">
@@ -224,15 +224,16 @@
   <h2>6 · Measured results (see RUNLOG.md for the full sweep)</h2>
   <table>
     <tr><th>profile</th><th>loss</th><th>chosen delay_ms</th><th>miss rate</th><th>overhead</th><th>result</th></tr>
-    <tr><td>A (mild)</td><td class="n">2%</td><td class="n">120</td><td class="n">0.00–0.13%</td><td class="n">1.38×</td><td>VALID</td></tr>
-    <tr><td>B (moderate)</td><td class="n">5%</td><td class="n">120</td><td class="n">0.50–0.73%</td><td class="n">1.38×</td><td>VALID</td></tr>
+    <tr><td>A (mild)</td><td class="n">2%</td><td class="n">110</td><td class="n">0.10–0.20%</td><td class="n">1.55×</td><td>VALID</td></tr>
+    <tr><td>B (moderate)</td><td class="n">5%</td><td class="n">110</td><td class="n">0.80–0.93%</td><td class="n">1.55×</td><td>VALID</td></tr>
   </table>
   <p>
-    Delay was walked down profile-by-profile (RUNLOG §3–4) until misses approached
-    the 1% cap, then backed off to the most stable point rather than the
-    lowest-observed one, since run-to-run scheduling jitter shows real variance
-    close to the boundary (RUNLOG §4 documents a case where a <em>higher</em>
-    delay_ms of 140 was actually less stable than 120).
+    Delay was walked down profile-by-profile (RUNLOG §3–4 for an initial G=3 pass,
+    §5–6 for the final G=2 pass) until misses approached the 1% cap, then backed
+    off to the most stable point rather than the lowest-observed one, since
+    run-to-run scheduling jitter shows real variance close to the boundary
+    (RUNLOG §5 documents delay_ms=100 creeping to 0.93% on longer 30s runs, while
+    110ms held a steadier ~0.8% — the reason 110, not 100, is the shipped value).
   </p>
 
   <h2>7 · Known limitation</h2>
