@@ -37,7 +37,7 @@
 
 static int group_size_from_env(void) {
     const char *e = getenv("FEC_G");
-    int g = e ? atoi(e) : 3;   /* default group size: tuned in RUNLOG.md */
+    int g = e ? atoi(e) : 2;   /* default group size: tuned in RUNLOG.md */
     if (g < 1) g = 1;
     if (g > MAX_G) g = MAX_G;
     return g;
