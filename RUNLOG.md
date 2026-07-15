@@ -25,9 +25,9 @@ dropped too. So we chose (b), sent proactively, never triggered by feedback.
 
 Contiguous-block XOR FEC, forward-only, no feedback:
 - Sender groups frames into blocks of **G** consecutive frames (env `FEC_G`,
-  default **3**). Every frame is forwarded immediately, unchanged. After the
-  G-th frame of a block is sent, the sender also sends one parity packet =
-  XOR of the G payloads in that block.
+  compiled-in default **2**, see §5–6 for why). Every frame is forwarded
+  immediately, unchanged. After the G-th frame of a block is sent, the sender
+  also sends one parity packet = XOR of the G payloads in that block.
 - Receiver forwards every arriving data frame to the harness player
   immediately (no artificial hold/reorder — the harness player already
   scores "first arrival before deadline", so buffering on our side would only
@@ -41,6 +41,10 @@ Contiguous-block XOR FEC, forward-only, no feedback:
   one parity packet protects a whole group, not just one frame.
 
 ## 2. Tuning G (group size) — profile B (loss 5%, delay 20–80ms, dup 1%), duration 20s
+
+*(This section and §3–4 document the first tuning pass, which settled on G=3 /
+delay_ms=120. §5–6 push further to the final G=2 / delay_ms=110 answer — kept
+here so the reasoning trail and the "why not just jump to G=2" comparison is visible.)*
 
 | G | overhead | delay_ms=140 miss% | notes |
 |---|----------|---------------------|-------|
@@ -85,32 +89,57 @@ that floor with a comfortable margin below the 1% cap and was the most
 stable point across repeated runs**, so it is our chosen operating point
 rather than the higher delay values that show more run-to-run variance.
 
-## 5. Final chosen operating point
+## 5. Re-tuning for a lower floor: G=2
 
-**delay_ms = 120, FEC_G = 3 (compiled-in default, no env var needed)**
+G=3 at delay_ms=120 was safely valid but left an obvious question: how low can
+delay_ms actually go? Smaller blocks recover faster (recovery latency is
+`(G-1)*20ms`, so G=2 only adds 20ms vs. G=3's 40ms) at the cost of higher
+overhead per byte (1.55x vs 1.38x — still far under the 2.0x cap, so the extra
+overhead is free to spend). Re-swept with G=2:
 
-Confirmed over multiple repeated runs, both given profiles, 20s and 30s durations:
+| profile | delay_ms | miss% (multiple 20s/30s reps) | overhead | result |
+|---------|----------|-------------------------------|----------|--------|
+| A | 45–55 | 0.7–2.2% (unstable, several INVALID) | 1.55x | unreliable |
+| A | 60     | 0.1–0.5% (stable, 6 reps)      | 1.55x | VALID |
+| A | 100–110 | 0.1–0.2%                      | 1.55x | VALID (large margin) |
+| B | 90     | 0.9–1.1% (borderline, 1 INVALID in 4 reps) | 1.55x | unreliable |
+| B | 95–100 | 0.6–0.93% (stable at 20s, thinner margin at 30s) | 1.55x | VALID |
+| B | 110    | 0.8% consistently (3 reps, 30s each)          | 1.55x | VALID, most consistent |
+
+At delay_ms=100, profile B crept up to 0.93% on longer (30s) runs — still
+under the cap but with less margin than we want for profiles we haven't
+seen. delay_ms=110 gave the same ~0.8% consistently across repeats at 30s,
+so it's the safer floor rather than 100.
+
+## 6. Final chosen operating point
+
+**delay_ms = 110, FEC_G = 2 (compiled-in default, no env var needed)**
+
+This is 10ms lower than the previous G=3/120ms operating point, confirmed
+over multiple repeated runs (20s and 30s durations) on both given profiles:
 
 | profile | miss% | overhead | result |
 |---------|-------|----------|--------|
-| A (mild)     | 0.00–0.13% | 1.38x | VALID |
-| B (moderate) | 0.50–0.73% | 1.38x | VALID |
+| A (mild)     | 0.10–0.20% | 1.55x | VALID |
+| B (moderate) | 0.80–0.93% | 1.55x | VALID |
 
-## 6. Stress tests beyond the given profiles (to understand failure modes for
+## 7. Stress tests beyond the given profiles (to understand failure modes for
    profiles we have not seen — not part of the graded profiles, informal only)
 
 - **Higher independent loss (8%)**: miss rate plateaus ~2% regardless of
   delay_ms — confirms the failure mode is FEC block capacity, not timing.
 - **Burst loss (Gilbert-Elliott, ~90% loss while "in burst")**: miss rate
-  jumped to ~6.7% even at delay_ms=120. Contiguous-block XOR only recovers
-  1 loss per block; a real burst that hits 2+ consecutive frames in the same
-  block is unrecoverable no matter how much delay budget is spent. This is
-  the design's known weak point (see NOTES.md) — an interleaved FEC scheme
-  (grouping physically-adjacent frames into *different* blocks) would trade
-  some recovery latency for real burst tolerance, and was the next thing we'd
-  build with more time.
+  jumped to ~6.7% at delay_ms=120 (tested with the earlier G=3 config; the
+  same limitation applies to the final G=2 config, since any block size ≥2
+  fails once 2+ consecutive frames in the same block are genuinely lost).
+  Contiguous-block XOR only recovers 1 loss per block; a real burst that hits
+  2+ consecutive frames in the same block is unrecoverable no matter how much
+  delay budget is spent. This is the design's known weak point (see
+  NOTES.md) — an interleaved FEC scheme (grouping physically-adjacent frames
+  into *different* blocks) would trade some recovery latency for real burst
+  tolerance, and was the next thing we'd build with more time.
 
-## 7. What we did NOT do, and why
+## 8. What we did NOT do, and why
 
 - **No retransmission / NACK path.** A request and its reply both cross the
   hostile relay, so the achievable round trip is at least 2x the relay's
