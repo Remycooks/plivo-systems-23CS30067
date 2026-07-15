@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>The Flaky Network — Architecture Summary</title>
+<style>
+  :root{
+    --bg:#0b0f14;
+    --panel:#111820;
+    --line:#233241;
+    --text:#d7e2ea;
+    --dim:#7d93a3;
+    --up:#5ec9a8;
+    --parity:#e0a458;
+    --bad:#e0625c;
+    --mono:"SF Mono","JetBrains Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:"Iowan Old Style","Georgia",serif;
+    line-height:1.55;
+  }
+  .wrap{max-width:920px;margin:0 auto;padding:56px 28px 100px;}
+  h1{
+    font-family:var(--mono); font-weight:700; letter-spacing:-0.02em;
+    font-size:2.1rem; margin:0 0 6px; color:#f2f6f9;
+  }
+  .subtitle{color:var(--dim); font-family:var(--mono); font-size:0.95rem; margin-bottom:44px;}
+  h2{
+    font-family:var(--mono); font-size:0.85rem; letter-spacing:0.14em; text-transform:uppercase;
+    color:var(--up); border-bottom:1px solid var(--line); padding-bottom:10px; margin:52px 0 22px;
+  }
+  p{color:var(--text); font-size:1.02rem;}
+  .lede{font-size:1.12rem; color:#eef3f6;}
+  code, .mono{font-family:var(--mono); font-size:0.92em;}
+  .pill{
+    display:inline-block; font-family:var(--mono); font-size:0.78rem;
+    padding:2px 8px; border-radius:3px; border:1px solid var(--line); color:var(--dim);
+  }
+
+  /* architecture diagram */
+  .diagram{
+    background:var(--panel); border:1px solid var(--line); border-radius:6px;
+    padding:28px 20px; font-family:var(--mono); font-size:0.82rem; overflow-x:auto;
+  }
+  .diagram .row{display:flex; align-items:center; justify-content:center; gap:6px; white-space:nowrap;}
+  .box{
+    border:1px solid var(--line); border-radius:4px; padding:10px 14px;
+    background:#0e151d; color:var(--text); text-align:center; min-width:110px;
+  }
+  .box.hostile{border-color:var(--bad); color:#f2c9c7;}
+  .box.ours{border-color:var(--up); color:#d7f2e6;}
+  .arrow{color:var(--dim); font-size:1.1rem;}
+  .diagram .label{font-size:0.7rem; color:var(--dim); text-align:center; margin-top:4px;}
+  .feedback-row{margin-top:26px; color:var(--dim); font-size:0.72rem; text-align:center;}
+
+  /* wire format */
+  table{border-collapse:collapse; width:100%; font-family:var(--mono); font-size:0.85rem; margin:18px 0;}
+  th, td{border:1px solid var(--line); padding:8px 12px; text-align:left;}
+  th{background:var(--panel); color:var(--dim); font-weight:600; font-size:0.75rem; text-transform:uppercase; letter-spacing:0.06em;}
+  td.n{color:var(--up);}
+  .bytefield{display:flex; font-family:var(--mono); font-size:0.78rem; margin:16px 0; border-radius:4px; overflow:hidden;}
+  .bf{padding:10px 6px; text-align:center; border-right:1px solid var(--bg);}
+  .bf.type{background:#2a3542; flex:0 0 60px;}
+  .bf.seq{background:#20303e; flex:0 0 110px;}
+  .bf.gs{background:#20303e; flex:0 0 90px;}
+  .bf.payload{background:#173229; flex:1 1 auto; color:#bfe9d4;}
+  .bf.parity{background:#332a17; flex:1 1 auto; color:#f0d3a3;}
+
+  blockquote{
+    border-left:3px solid var(--up); margin:18px 0; padding:2px 20px; color:var(--dim);
+    font-family:var(--mono); font-size:0.88rem;
+  }
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:24px;}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:18px 20px;}
+  .card h3{margin-top:0; font-family:var(--mono); font-size:0.9rem; color:#f2f6f9;}
+  .stat{font-family:var(--mono); font-size:1.6rem; color:var(--up);}
+  .stat.warn{color:var(--parity);}
+  .capline{color:var(--dim); font-size:0.8rem; font-family:var(--mono);}
+  ul{padding-left:22px;}
+  li{margin-bottom:6px;}
+  .footer{margin-top:70px; color:var(--dim); font-family:var(--mono); font-size:0.75rem; border-top:1px solid var(--line); padding-top:18px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>THE FLAKY NETWORK</h1>
+  <div class="subtitle">architecture summary — forward-only XOR FEC sender/receiver in C</div>
+
+  <p class="lede">
+    A live-audio stream — one 160-byte frame every 20&nbsp;ms — has to cross a UDP
+    path that drops, delays, reorders, and duplicates packets, and still get played
+    out on a steady clock at the far end. This submission's answer is: never wait
+    for a second round trip. Send a little extra data <em>ahead of time</em> so the
+    receiver can reconstruct a lost frame the moment it notices one is missing,
+    instead of asking the sender to resend it.
+  </p>
+
+  <h2>1 · Topology</h2>
+  <div class="diagram">
+    <div class="row">
+      <div>
+        <div class="box">harness<br>source</div>
+        <div class="label">:47010</div>
+      </div>
+      <div class="arrow">──▶</div>
+      <div>
+        <div class="box ours">our<br>sender</div>
+        <div class="label">reads 47010</div>
+      </div>
+      <div class="arrow">──▶</div>
+      <div>
+        <div class="box hostile">relay<br>(hostile)</div>
+        <div class="label">loss · jitter · dup</div>
+      </div>
+      <div class="arrow">──▶</div>
+      <div>
+        <div class="box ours">our<br>receiver</div>
+        <div class="label">binds 47002</div>
+      </div>
+      <div class="arrow">──▶</div>
+      <div>
+        <div class="box">harness<br>player</div>
+        <div class="label">:47020, judges deadline</div>
+      </div>
+    </div>
+    <div class="feedback-row">feedback path (47003 → relay → 47004) exists in the harness but is intentionally left unused — see §4</div>
+  </div>
+
+  <h2>2 · Wire format (sender ⇄ receiver only)</h2>
+  <p>
+    Ports 47010/47020 use the harness's fixed <code>seq(u32be) + 160B payload</code>
+    framing and cannot be changed. Between our own two processes the format is
+    entirely our design. We use two packet types:
+  </p>
+
+  <p class="mono capline">DATA — 165 bytes</p>
+  <div class="bytefield">
+    <div class="bf type">type=1<br>1B</div>
+    <div class="bf seq">seq (u32be)<br>4B</div>
+    <div class="bf payload">frame payload — 160B</div>
+  </div>
+
+  <p class="mono capline">PARITY — 166 bytes</p>
+  <div class="bytefield">
+    <div class="bf type">type=2<br>1B</div>
+    <div class="bf seq">base_seq (u32be)<br>4B</div>
+    <div class="bf gs">group_size<br>1B</div>
+    <div class="bf parity">XOR of G payloads — 160B</div>
+  </div>
+
+  <h2>3 · The mechanism: forward-only XOR FEC</h2>
+  <p>
+    Frames are grouped contiguously into blocks of <code>G</code> (default
+    <strong>3</strong>, overridable with env <code>FEC_G</code> for experiments).
+    Every frame is forwarded to the relay the instant it arrives from the harness
+    source — no batching, no held-back scheduling. After the sender has sent the
+    G-th frame of a block, it also sends one <strong>parity packet</strong>: the
+    byte-wise XOR of that block's G payloads.
+  </p>
+  <p>
+    On the receiver side, every arriving DATA or PARITY packet is stored and then
+    triggers a check: "does this block now have exactly one member missing?" If
+    yes, and the parity has arrived, the missing payload is reconstructed by XOR-ing
+    the parity with the other <code>G−1</code> present payloads — algebraically
+    exact, since XOR is its own inverse. The recovered frame is forwarded to the
+    harness player immediately, in the same fixed
+    <code>seq(u32be) + 160B payload</code> format it expects on port 47020.
+  </p>
+  <p>
+    There is no reordering or hold-and-wait buffer on the receiver. The harness
+    player already scores "first correct arrival before its deadline," so the only
+    thing worth doing locally is (a) forward the instant we have a frame, and (b)
+    make "having a frame" possible slightly earlier for frames that were actually
+    lost, via the parity. The only added latency this introduces is intrinsic to
+    the FEC group size itself: a lost frame can't be reconstructed until the block's
+    <em>last</em> member and its parity have both gone out, i.e. up to
+    <code>(G−1)×20ms</code> after the loss — 40&nbsp;ms for G=3.
+  </p>
+
+  <h2>4 · Why FEC and not retransmission</h2>
+  <blockquote>
+    "What does a resend cost in time when the request AND the reply each cross the
+    hostile network?"
+  </blockquote>
+  <p>
+    A NACK-based scheme needs the receiver to notice a gap, ask the sender for it
+    (crossing the relay once), and get the resend back (crossing the relay again).
+    Under profile B's 20–80&nbsp;ms per-hop jitter, that round trip alone can burn
+    well over 100&nbsp;ms before the resend even leaves the sender — more delay
+    budget than the whole FEC scheme costs end-to-end, and the resend request or
+    its reply can itself be dropped, cascading into a second wait. Sending a small
+    amount of redundancy <em>ahead of time</em>, unconditionally, sidesteps this
+    entirely: there is no dependency on anything surviving a second network
+    crossing. The feedback ports (47003/47004) are wired up in the harness but our
+    sender/receiver never use them — <code>down_bytes</code> is 0 in every run,
+    which also leaves the full bandwidth budget available for FEC instead of
+    splitting it with a feedback channel.
+  </p>
+
+  <h2>5 · Bandwidth budget</h2>
+  <p>
+    One parity packet (166B) protects a whole block of G data packets (165B each),
+    so the overhead ratio is <code>(165G + 166) / (160G)</code> — this is why
+    grouping beats naive duplication: duplicating every frame costs a full extra 1×
+    (≈2.0×, the <em>entire</em> budget with no header room left), while a group of
+    G shares one parity packet's cost across G frames.
+  </p>
+  <div class="grid2">
+    <div class="card">
+      <h3>Chosen: G = 3</h3>
+      <div class="stat">1.38×</div>
+      <div class="capline">measured bandwidth overhead — cap is 2.00×</div>
+    </div>
+    <div class="card">
+      <h3>Recovery model</h3>
+      <div class="stat">p·(1−(1−p)<sup>G</sup>)</div>
+      <div class="capline">residual miss rate for independent loss p, block size G</div>
+    </div>
+  </div>
+
+  <h2>6 · Measured results (see RUNLOG.md for the full sweep)</h2>
+  <table>
+    <tr><th>profile</th><th>loss</th><th>chosen delay_ms</th><th>miss rate</th><th>overhead</th><th>result</th></tr>
+    <tr><td>A (mild)</td><td class="n">2%</td><td class="n">120</td><td class="n">0.00–0.13%</td><td class="n">1.38×</td><td>VALID</td></tr>
+    <tr><td>B (moderate)</td><td class="n">5%</td><td class="n">120</td><td class="n">0.50–0.73%</td><td class="n">1.38×</td><td>VALID</td></tr>
+  </table>
+  <p>
+    Delay was walked down profile-by-profile (RUNLOG §3–4) until misses approached
+    the 1% cap, then backed off to the most stable point rather than the
+    lowest-observed one, since run-to-run scheduling jitter shows real variance
+    close to the boundary (RUNLOG §4 documents a case where a <em>higher</em>
+    delay_ms of 140 was actually less stable than 120).
+  </p>
+
+  <h2>7 · Known limitation</h2>
+  <p>
+    A contiguous XOR block recovers at most <strong>one</strong> lost frame per
+    block. Two or more genuine drops landing in the same block are unrecoverable no
+    matter how much delay is budgeted — this is a hard ceiling from the algebra
+    (one parity equation, one unknown), not a tuning problem. In stress testing
+    beyond the given profiles, independent loss much above ~8% or a real
+    burst-loss pattern (several consecutive drops) both push the residual miss rate
+    over the 1% cap, because bursts concentrate multiple losses inside one block.
+    The natural next step, not built here for time, is <strong>interleaved</strong>
+    FEC — assigning physically-adjacent frames to <em>different</em> blocks so a
+    time-local burst spreads its damage across several blocks (each losing at most
+    one member) instead of concentrating it in one.
+  </p>
+
+  <h2>8 · Code structure</h2>
+  <ul>
+    <li><code>sender.c</code> (~110 lines) — binds 47010, maintains a small
+      <code>G</code>-slot rolling buffer for the block currently being formed,
+      forwards every DATA packet immediately, emits one PARITY packet per
+      completed block. No feedback socket.</li>
+    <li><code>receiver.c</code> (~185 lines) — binds 47002, sizes its
+      per-sequence bookkeeping arrays from <code>DURATION_S</code>, forwards
+      every DATA packet to 47020 immediately, and on every DATA or PARITY
+      arrival re-checks whether the touched block can now be solved.</li>
+    <li>Byte order: all multi-byte header fields (<code>seq</code>,
+      <code>base_seq</code>) are big-endian on the wire
+      (<code>htonl</code>/<code>ntohl</code>), matching the harness's own
+      framing convention.</li>
+    <li>Buffer ownership: the receiver owns one contiguous
+      <code>calloc</code>'d payload table indexed by <code>seq</code> for the
+      whole run; the sender only ever needs the current block's <code>G</code>
+      slots, since forwarding is immediate and nothing older is ever
+      re-read.</li>
+    <li>Blocking: both processes run a single-threaded blocking
+      <code>recvfrom</code> loop — there is no timer-driven send path (the
+      sender only ever reacts to harness input, never sends spontaneously), so
+      there is no risk of the receive loop blocking at a moment it needed to
+      be doing something else.</li>
+  </ul>
+
+  <div class="footer">
+    Generated to accompany sender.c / receiver.c / Makefile / RUNLOG.md / NOTES.md — The Flaky Network assignment.
+  </div>
+</div>
+</body>
+</html>
